@@ -1,5 +1,5 @@
 ---
-title: Tempo charge Intent for HTTP Payment Authentication
+title: Tempo Charge Intent for HTTP Payment Authentication
 abbrev: Tempo Charge
 docname: draft-tempo-charge-00
 version: 00
@@ -218,7 +218,8 @@ other account activity if the transaction is not immediately settled.
 If `methodDetails.feePayer` is `true`, the client signs with
 `fee_payer_signature` set to `0x00` and `fee_token` empty, allowing the
 server to sponsor fees. If `feePayer` is `false` or omitted, the client
-MUST set `fee_token` and pay fees themselves.
+MUST set `fee_token` and either pay the fees themselves or obtain a fee
+payer signature from a sponsor.
 
 ## Split Payments {#split-payments}
 
@@ -341,9 +342,10 @@ chain ID applicable to the challenge and the payer's Ethereum address.
 ## Transaction Payload (type="transaction")
 
 When `type` is `"transaction"`, `signature` contains the complete signed
-Tempo Transaction (type 0x76) serialized as RLP and hex-encoded with
-`0x` prefix. The transaction MUST authorize payment in the requested
-TIP-20 token sufficient to satisfy the challenge parameters, using one
+Tempo Transaction (type 0x76) {{TEMPO-TX-SPEC}} serialized as RLP and
+hex-encoded with `0x` prefix. The transaction MUST authorize payment in
+the requested TIP-20 token sufficient to satisfy the challenge
+parameters, using one
 or more `transfer` and/or `transferWithMemo` calls. When `splits` are
 present, the transaction MUST include transfers for each split entry
 (see {{split-payments}}). This payload type corresponds to `pull` mode.
@@ -431,24 +433,51 @@ The typed-data domain and types are:
 {
   "domain": {
     "name": "MPP",
-    "version": "1",
+    "version": "3",
     "chainId": <challenge methodDetails.chainId>
   },
   "types": {
     "Proof": [
-      { "name": "challengeId", "type": "string" }
+      { "name": "account", "type": "address" },
+      { "name": "challengeId", "type": "string" },
+      { "name": "realm", "type": "string" }
     ]
   },
   "primaryType": "Proof",
   "message": {
-    "challengeId": "<challenge.id>"
+    "account": "<address from credential.source>",
+    "challengeId": "<challenge.id>",
+    "realm": "<challenge realm>"
   }
 }
 ~~~
 
 The `challengeId` in the message MUST be the `id` from the challenge
 that was issued to the client. This binds the signature to exactly one
-challenge, preventing cross-challenge replay.
+challenge, preventing cross-challenge replay. The `account` MUST be
+the address from `credential.source`, binding the proof to the paying
+account so that a signature cannot be replayed against another account
+controlled by the same signing key. The `realm` MUST be the `realm`
+from the challenge, binding the proof to the issuing origin and
+preventing cross-realm replay of a proof obtained from a different
+server.
+
+### Proof Contract Versions
+
+The domain `version` identifies the proof contract. Three versions have
+shipped:
+
+| Version | `Proof` fields | Description |
+|---------|----------------|-------------|
+| `"1"` | `challengeId` | Initial contract. Binds a proof to a single challenge. |
+| `"2"` | `challengeId`, `realm` | Adds realm binding, so a proof obtained from one server cannot be replayed against another. |
+| `"3"` | `account`, `challengeId`, `realm` | Adds payer binding, so a proof cannot be replayed against a different account, including across an access key authorized for multiple accounts. |
+
+Implementations MUST use version `"3"`. The domain `version` is part of
+the EIP-712 digest, so a signature produced under version `"1"` or
+`"2"` does not verify against the version `"3"` typed data. Servers
+MUST NOT accept proof signatures made under domain version `"1"` or
+`"2"`.
 
 ### Proof Verification
 
@@ -458,9 +487,19 @@ Servers MUST verify proof credentials as follows:
    `did:pkh:eip155:<chainId>:<address>`
 2. Verify the chain ID from `source` matches
    `methodDetails.chainId` from the challenge
-3. Recover the signer from `payload.signature` using the EIP-712
-   domain, types, and message described above
-4. Verify the recovered signer matches the address in `source`
+3. Reconstruct the typed data described above with `account` set to
+   the address from `source`, `challengeId` set to the challenge `id`,
+   and `realm` set to the challenge `realm`
+4. Verify `payload.signature` is a valid signature over that typed
+   data by the address from `source`. Recovering the signer and
+   comparing it to the address from `source` satisfies this check;
+   servers MAY additionally accept contract-account signatures
+   (ERC-1271).
+5. If step 4 fails, servers MAY instead recover the signer of
+   `payload.signature` and accept the credential only if that signer
+   is an access key currently authorized on-chain for the account in
+   `source`. Servers MUST NOT otherwise accept a credential whose
+   signer differs from the address in `source`.
 
 ### Proof Receipt
 
@@ -498,8 +537,9 @@ transaction fees on behalf of the client.
 When `feePayer: true`:
 
 1. **Client signs with placeholder**: The client signs the Tempo Transaction
-   with `fee_payer_signature` set to a placeholder value (`0x00`) and
-   `fee_token` left empty. The client uses signature domain `0x76`.
+   {{TEMPO-TX-SPEC}} with `fee_payer_signature` set to a placeholder value
+   (`0x00`) and `fee_token` left empty. The client uses signature domain
+   `0x76`.
 
 2. **Server receives credential**: The server extracts the client-signed
    transaction from the credential payload.
@@ -516,8 +556,10 @@ When `feePayer: true`:
 ## Client-Paid Fees
 
 When `feePayer: false` or omitted, the client MUST set `fee_token` to a
-valid USD TIP-20 token address and pay fees themselves. The server
-broadcasts the transaction as-is without adding a fee payer signature.
+valid USD TIP-20 token address and arrange payment of the fees, either
+by paying the fees themselves or by obtaining a fee payer signature
+from a sponsor. The server broadcasts the transaction as-is without
+adding a fee payer signature.
 
 ## Server Requirements
 
@@ -534,7 +576,8 @@ When acting as fee payer, servers:
 - When `feePayer: true`: Clients MUST sign with `fee_payer_signature` set
   to `0x00` and `fee_token` empty or `0x80` (RLP null)
 - When `feePayer: false` or omitted: Clients MUST set `fee_token` to a
-  valid USD TIP-20 token and have sufficient balance to pay fees
+  valid USD TIP-20 token. The client or sponsor paying the fee MUST have
+  sufficient balance of that token
 
 # Settlement Procedure
 
@@ -773,7 +816,7 @@ WWW-Authenticate: Payment id="kM9xPqWvT2nJrHsY4aDfEb",
   realm="api.example.com",
   method="tempo",
   intent="charge",
-  request="eyJhbW91bnQiOiIxMDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJyZWNpcGllbnQiOiIweDc0MmQzNUNjNjYzNEMwNTMyOTI1YTNiODQ0QmM5ZTc1OTVmOGZFMDAiLCJtZXRob2REZXRhaWxzIjp7ImNoYWluSWQiOjQyMTcsInN1cHBvcnRlZE1vZGVzIjpbInB1bGwiXX19",
+  request="eyJhbW91bnQiOiIxMDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJtZXRob2REZXRhaWxzIjp7ImNoYWluSWQiOjQyMTcsInN1cHBvcnRlZE1vZGVzIjpbInB1bGwiXX0sInJlY2lwaWVudCI6IjB4NzQyZDM1Q2M2NjM0QzA1MzI5MjVhM2I4NDRCYzllNzU5NWY4ZkUwMCJ9",
   expires="2025-01-06T12:00:00Z"
 Cache-Control: no-store
 ~~~

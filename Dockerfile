@@ -1,4 +1,4 @@
-FROM ruby:4.0.5-slim@sha256:86a2ff44ce474c1c9bd11dfb2fd7fe5408a5bfe8236b9bc6013e2c6ef4c02d39
+FROM ruby:4.0.6-slim@sha256:abd7528c4df35d151e2643d5efb845e442a26e36a4babc6459bee508619137a2
 
 # Install dependencies including WeasyPrint requirements for PDF generation
 RUN apt-get update && \
@@ -6,6 +6,8 @@ RUN apt-get update && \
       python3-pip \
       python3-venv \
       build-essential \
+      # test_bump_and_rename.py runs git mv
+      git \
       # WeasyPrint dependencies for PDF generation
       libpango-1.0-0 \
       libpangocairo-1.0-0 \
@@ -18,9 +20,9 @@ RUN apt-get update && \
       && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Ruby dependencies (kramdown-rfc)
-COPY Gemfile Gemfile.lock* /tmp/
-RUN cd /tmp && bundle install && rm -f Gemfile Gemfile.lock
+# Install Ruby dependencies (kramdown-rfc) at the versions in Gemfile.lock
+COPY Gemfile Gemfile.lock /tmp/
+RUN cd /tmp && BUNDLE_FROZEN=true bundle install && rm -f Gemfile Gemfile.lock
 
 # Install Python dependencies (xml2rfc, rfclint)
 COPY requirements.txt /tmp/requirements.txt

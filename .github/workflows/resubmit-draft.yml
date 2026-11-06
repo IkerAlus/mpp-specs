@@ -1,67 +1,132 @@
 name: Resubmit IETF Draft
 
 # IETF I-Ds expire after 185 days (~6 months).
-# This checks weekly and opens a version-bump PR once 165 days have passed.
+# This checks weekly and opens a version-bump PR within 35 days of expiry.
 # Merging the PR triggers submit-draft.yml which submits to the IETF
 # datatracker automatically. An author must then confirm via email.
 
 on:
   schedule:
-    # Check weekly; the job skips unless 165+ days since last revision bump
+    # Check weekly; the job skips while the draft has more than 35 days left
     - cron: "0 12 * * 1"
   workflow_dispatch:
 
+# The bump branch is pushed and the PR opened with a short-lived GitHub App
+# token minted via github-sts (authorized by .github/sts/resubmit-draft.sts.yaml)
+# rather than the built-in GITHUB_TOKEN, which is not allowed to create pull
+# requests. id-token lets the job request the OIDC token the STS exchange
+# verifies.
 permissions:
-  contents: write
-  pull-requests: write
+  actions: write
+  contents: read
+  id-token: write
+  pull-requests: read
 
 jobs:
   bump-and-pr:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check if 165+ days since last bump
+      - name: Check IETF expiry and revision
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          DRAFT=draft-httpauth-payment
           SPEC=$(find specs/core -name 'draft-httpauth-payment-*.md' | head -1)
-          LAST_TOUCH=$(git log -1 --format=%ct -- "$SPEC")
+          LOCAL_VER=$(basename "$SPEC" .md | grep -oE '[0-9]+$')
+          METADATA=$(curl --fail --silent --show-error --retry 3 \
+            "https://datatracker.ietf.org/api/v1/doc/document/$DRAFT/")
+          REMOTE_VER=$(echo "$METADATA" | jq -er '.rev')
+          EXPIRES=$(echo "$METADATA" | jq -er '.expires')
           NOW=$(date +%s)
-          DAYS_AGO=$(( (NOW - LAST_TOUCH) / 86400 ))
-          echo "days_since_bump=$DAYS_AGO" >> "$GITHUB_OUTPUT"
-          if [[ "$DAYS_AGO" -lt 165 ]]; then
-            echo "Only $DAYS_AGO days since last bump — skipping (threshold: 165)"
+          EXPIRY=$(date --date="$EXPIRES" +%s)
+          DAYS_LEFT=$(( (EXPIRY - NOW) / 86400 ))
+          echo "days_left=$DAYS_LEFT" >> "$GITHUB_OUTPUT"
+
+          if (( 10#$LOCAL_VER > 10#$REMOTE_VER )); then
+            SUBMISSIONS=$(curl --fail --silent --show-error --retry 3 \
+              "https://datatracker.ietf.org/api/v1/submit/submission/?name=$DRAFT&rev=$LOCAL_VER&limit=1&order_by=-id")
+            STATE=$(echo "$SUBMISSIONS" | jq -r \
+              '.objects[0].state // "" | split("/") | map(select(length > 0)) | last // ""')
+            if [[ -z "$STATE" || "$STATE" == "cancel" ]]; then
+              echo "Repository revision -$LOCAL_VER has no active submission — retrying"
+              gh workflow run submit-draft.yml --ref main
+            else
+              echo "Repository revision -$LOCAL_VER has submission state=$STATE; IETF has -$REMOTE_VER"
+            fi
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "$DAYS_AGO days since last bump — time to resubmit"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if (( 10#$LOCAL_VER < 10#$REMOTE_VER )); then
+            echo "::error::Repository revision -$LOCAL_VER is behind IETF revision -$REMOTE_VER"
+            exit 1
+          fi
+          if (( DAYS_LEFT > 35 )); then
+            echo "$DAYS_LEFT days until expiry — skipping (threshold: 35)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEW_VER=$(printf '%02d' $((10#$REMOTE_VER + 1)))
+          OPEN_PRS=$(gh pr list --state open --head "ietf/resubmit-$NEW_VER" \
+            --json number --jq 'length')
+          if (( OPEN_PRS > 0 )); then
+            echo "Revision -$NEW_VER PR already exists — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$DAYS_LEFT days until expiry — preparing revision -$NEW_VER"
+          echo "new_ver=$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Bump revision
         if: steps.check.outputs.skip == 'false'
         id: bump
+        env:
+          EXPECTED_NEW_VER: ${{ steps.check.outputs.new_ver }}
         run: |
           chmod +x scripts/bump_and_rename.sh
           NEW_VER=$(scripts/bump_and_rename.sh)
+          if [[ "$NEW_VER" != "$EXPECTED_NEW_VER" ]]; then
+            echo "::error::Expected revision $EXPECTED_NEW_VER, got $NEW_VER"
+            exit 1
+          fi
           echo "new_ver=$NEW_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch GitHub token via STS
+        if: steps.check.outputs.skip == 'false'
+        id: sts
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          policy: resubmit-draft
 
       - name: Create PR
         if: steps.check.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.sts.outputs.token }}
+          NEW_VER: ${{ steps.bump.outputs.new_ver }}
         run: |
-          BRANCH="ietf/resubmit-${{ steps.bump.outputs.new_ver }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="ietf/resubmit-$NEW_VER"
+          # Checkout runs with persist-credentials: false; authenticate the
+          # push through the gh credential helper using GH_TOKEN instead.
+          gh auth setup-git
+          git config user.name "tempo-github-sts[bot]"
+          git config user.email "312736176+tempo-github-sts[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add -A
-          git commit -m "chore: bump draft revision to -${{ steps.bump.outputs.new_ver }}"
+          git commit -m "chore: bump draft revision to -$NEW_VER"
           git push origin "$BRANCH"
           gh pr create \
-            --title "chore: bump IETF draft to revision -${{ steps.bump.outputs.new_ver }}" \
+            --title "chore: bump IETF draft to revision -$NEW_VER" \
             --body "Automated revision bump to prevent the IETF Internet-Draft from expiring (185-day limit).
 
           Merging this PR will automatically submit the new revision to the IETF datatracker.

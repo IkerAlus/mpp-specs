@@ -26,7 +26,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -47,7 +47,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 ---
@@ -55,6 +55,53 @@ consensus: true
         spec = write_spec(tmp_path, content)
         errors = lint_file(spec)
         assert any("missing required field 'author'" in e for e in errors)
+
+
+class TestIgnoredSpecs:
+    def test_ignored_docname_skips_frontmatter_checks(self, tmp_path):
+        content = """---
+title: Hedera Session Intent for HTTP Payment Authentication
+abbrev: Hedera Session
+docname: draft-hedera-session-00
+version: "00"
+category: info
+ipr: trust200902
+submissiontype: independent
+consensus: false
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+normative:
+  I-D.httpauth-payment:
+    title: "The 'Payment' HTTP Authentication Scheme"
+    target: https://datatracker.ietf.org/doc/draft-ietf-httpauth-payment/
+    author:
+      - name: Jake Moxey
+---
+"""
+        spec = write_spec(tmp_path, content)
+        assert lint_file(spec) == []
+
+    def test_other_docname_remains_linted(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: trust200902
+submissiontype: independent
+consensus: false
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert any("ipr should be" in error for error in errors)
 
 
 class TestVersionFormat:
@@ -65,7 +112,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -86,7 +133,7 @@ abbrev: Test
 docname: draft-test-00
 version: 0
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -107,7 +154,7 @@ abbrev: Test
 docname: draft-test-00
 version: 1
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -130,7 +177,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -151,7 +198,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -174,7 +221,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -195,7 +242,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -210,8 +257,29 @@ author:
         assert any("field order" in e for e in errors)
 
 
-class TestIDReference:
-    def test_valid_id_reference(self, tmp_path):
+class TestIPR:
+    def test_correct_ipr(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: IETF
+consensus: true
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    org: Test Org
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert not any("ipr" in e for e in errors)
+
+    def test_wrong_ipr(self, tmp_path):
         content = """---
 title: Test Spec
 abbrev: Test
@@ -226,10 +294,121 @@ author:
     ins: T. Author
     email: test@example.com
     org: Test Org
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert any("ipr should be 'noModificationTrust200902'" in e for e in errors)
+
+
+class TestConsensusSubmissiontype:
+    def test_independent_with_consensus_false(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: independent
+consensus: false
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    org: Test Org
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert not any("consensus" in e for e in errors)
+
+    def test_independent_with_consensus_true(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: independent
+consensus: true
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    org: Test Org
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert any("consensus must be false for independent" in e for e in errors)
+
+
+class TestAuthorOrganization:
+    def test_org_is_correct(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: IETF
+consensus: true
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    org: Test Org
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert not any("organization" in e for e in errors)
+
+    def test_organization_flagged(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: IETF
+consensus: true
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    organization: Test Org
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert any("'organization' instead of 'org'" in e for e in errors)
+
+
+class TestIDReference:
+    def test_valid_id_reference(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: IETF
+consensus: true
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    org: Test Org
 normative:
   I-D.httpauth-payment:
     title: "The 'Payment' HTTP Authentication Scheme"
-    target: https://datatracker.ietf.org/doc/draft-httpauth-payment/
+    target: https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/
     author:
       - name: Jake Moxey
     date: 2026-01
@@ -246,7 +425,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -273,7 +452,7 @@ abbrev: Test
 docname: draft-test-00
 version: "00"
 category: info
-ipr: trust200902
+ipr: noModificationTrust200902
 submissiontype: IETF
 consensus: true
 author:
@@ -284,7 +463,7 @@ author:
 normative:
   I-D.httpauth-payment:
     title: "The 'Payment' HTTP Authentication Scheme"
-    target: https://datatracker.ietf.org/doc/draft-httpauth-payment/
+    target: https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/
     author:
       - ins: J. Moxey
     date: 2026-01
@@ -293,3 +472,31 @@ normative:
         spec = write_spec(tmp_path, content)
         errors = lint_file(spec)
         assert any("should use 'name'" in e for e in errors)
+
+    def test_wrong_target_url(self, tmp_path):
+        content = """---
+title: Test Spec
+abbrev: Test
+docname: draft-test-00
+version: "00"
+category: info
+ipr: noModificationTrust200902
+submissiontype: IETF
+consensus: true
+author:
+  - name: Test Author
+    ins: T. Author
+    email: test@example.com
+    org: Test Org
+normative:
+  I-D.httpauth-payment:
+    title: "The 'Payment' HTTP Authentication Scheme"
+    target: https://datatracker.ietf.org/doc/draft-ietf-httpauth-payment/
+    author:
+      - name: Jake Moxey
+    date: 2026-01
+---
+"""
+        spec = write_spec(tmp_path, content)
+        errors = lint_file(spec)
+        assert any("target should be" in e for e in errors)
